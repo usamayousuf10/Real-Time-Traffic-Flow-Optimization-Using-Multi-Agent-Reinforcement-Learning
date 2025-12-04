@@ -1,0 +1,608 @@
+# CityFlow Visual Concepts Guide
+## Understanding Traffic Simulation for PressLight
+
+---
+
+## 📍 Part 1: Road Network Structure
+
+### Single Intersection Layout
+
+```
+                    North (N)
+                      ↓ ↓
+                   [road_3_1]
+                      ↓ ↓
+    West (W)         ╔═╗         East (E)
+    → → → [road_0_1] ║⊕║ [road_1_2] → → →
+                     ╚═╝
+                      ↑ ↑
+                   [road_1_4]
+                      ↑ ↑
+                    South (S)
+
+    ⊕ = Traffic Signal Intersection
+    → = Traffic flow direction
+    ═ = Intersection area (15m width)
+```
+
+### 2-Intersection Arterial Network
+
+```
+    N1              N2
+    ↓               ↓
+W1→ ⊕ →E1  ═══►  W2→ ⊕ →E2
+    ↓               ↓
+    S1              S2
+
+═══► = Connecting arterial road (300m)
+```
+
+### Lane Structure (3-lane arterial road)
+
+```
+Road: road_0_1 (West to East)
+
+┌─────────────────────────────────────┐
+│ Lane 0 (Index 0)    →→→→→→→→→→→→    │  Left turn + Straight
+│ Lane 1 (Index 1)    →→→→→→→→→→→→    │  Straight
+│ Lane 2 (Index 2)    →→→→→→→→→→→→    │  Straight + Right turn
+└─────────────────────────────────────┘
+
+Each lane: 3.0m wide, max speed 16.67 m/s (60 km/h)
+```
+
+---
+
+## 🚦 Part 2: Traffic Signal Phases
+
+### 4-Phase Signal System
+
+```
+Phase 0: East-West Straight
+─────────────────────────────
+         ⊗ (Red)
+            │
+    🟢 ──── ⊕ ──── 🟢
+            │
+         ⊗ (Red)
+
+Phase 1: North-South Straight
+──────────────────────────────
+         🟢 (Green)
+            │
+    ⊗ ──── ⊕ ──── ⊗
+            │
+         🟢 (Green)
+
+Phase 2: East-West Left Turn
+─────────────────────────────
+         ↓
+         ⊗
+    🟢 ↺  ⊕  ↻ 🟢
+         ⊗
+         ↑
+
+Phase 3: North-South Left Turn
+───────────────────────────────
+         🟢
+       ↙    ↖
+    ⊗  ⊕  ⊗
+       ↘    ↗
+         🟢
+```
+
+### Phase Timing (Standard)
+
+| Phase | Movement | Duration | Purpose |
+|-------|----------|----------|---------|
+| 0 | EW Straight | 30s | Main arterial flow |
+| 1 | NS Straight | 20s | Side street flow |
+| 2 | EW Left | 10s | Left turn clearance |
+| 3 | NS Left | 10s | Left turn clearance |
+
+**Total Cycle: 70 seconds**
+
+---
+
+## 🚗 Part 3: Vehicle Movement
+
+### Vehicle Parameters
+
+```python
+{
+    "length": 5.0,        # 5 meters (typical car)
+    "width": 2.0,         # 2 meters
+    "maxSpeed": 16.67,    # 60 km/h = 16.67 m/s
+    "maxPosAcc": 2.0,     # Acceleration: 2 m/s²
+    "maxNegAcc": 4.5,     # Braking: 4.5 m/s²
+    "minGap": 2.5,        # Min distance to vehicle ahead
+    "headwayTime": 2.0    # Time gap (seconds)
+}
+```
+
+### Car-Following Model
+
+```
+Vehicle Spacing Visualization:
+
+[Car A]──2.5m──[Car B]──2.5m──[Car C]
+
+If Car A brakes:
+    Car B starts braking after 2.0s (headway time)
+    Car B stops with minGap = 2.5m from Car A
+```
+
+### Lane Vehicle Distribution
+
+```
+PressLight State: 3 Segments per Lane
+
+┌────────────────────────────────────┐
+│  Segment 2 (Far)   │ 🚗 🚗 🚗      │  ← Vehicles enter here
+│  Segment 1 (Mid)   │ 🚗 🚗         │
+│  Segment 0 (Near)  │ 🚗            │  ← Closest to intersection
+└────────────────────┴───────────────┘
+                      ↓
+                  [Intersection]
+
+Each segment: ~100m (assuming 300m total road length)
+```
+
+---
+
+## 📊 Part 4: PressLight State Representation
+
+### 18-Dimensional State Vector
+
+```
+Index | Description           | Value Range | Example
+──────┼──────────────────────┼─────────────┼────────
+0-1   | Phase encoding       | {0, 1}      | [1, 0]
+2-4   | East incoming (3seg) | [0.0, 1.0]  | [0.5, 0.3, 0.2]
+5-7   | West incoming        | [0.0, 1.0]  | [0.4, 0.4, 0.3]
+8-10  | North incoming       | [0.0, 1.0]  | [0.6, 0.5, 0.4]
+11-13 | South incoming       | [0.0, 1.0]  | [0.3, 0.2, 0.1]
+14    | East outgoing        | [0.0, 1.0]  | 0.4
+15    | West outgoing        | [0.0, 1.0]  | 0.3
+16    | North outgoing       | [0.0, 1.0]  | 0.5
+17    | South outgoing       | [0.0, 1.0]  | 0.2
+
+Normalized by capacity: value = vehicles / max_capacity
+```
+
+### State Extraction Example
+
+```python
+# Intersection has:
+# - East: 15 vehicles across 3 lanes
+# - Capacity per lane: 10 vehicles
+# - Total capacity: 30 vehicles
+
+vehicles_east = 15
+normalized = vehicles_east / 30 = 0.5
+
+# Split into 3 segments (simplified):
+segment_0 = 0.5 / 3 = 0.17
+segment_1 = 0.5 / 3 = 0.17
+segment_2 = 0.5 / 3 = 0.17
+
+state[2:5] = [0.17, 0.17, 0.17]
+```
+
+---
+
+## 💡 Part 5: Pressure Calculation
+
+### Concept Visualization
+
+```
+Incoming Flow vs Outgoing Flow
+
+High Pressure (Bad):
+────────────────────
+Incoming: 🚗🚗🚗🚗🚗 (15 vehicles)
+           ↓ ↓ ↓
+        [Intersection]
+           ↓ ↓
+Outgoing:  🚗🚗 (5 vehicles)
+
+Pressure = |15 - 5| = 10 (High!)
+→ Queue building up
+
+
+Low Pressure (Good):
+───────────────────
+Incoming: 🚗🚗🚗 (8 vehicles)
+           ↓ ↓
+        [Intersection]
+           ↓ ↓
+Outgoing:  🚗🚗🚗 (7 vehicles)
+
+Pressure = |8 - 7| = 1 (Low!)
+→ Balanced flow
+```
+
+### Pressure Formula
+
+```python
+pressure = 0
+for direction in ['E', 'W', 'N', 'S']:
+    incoming_normalized = vehicles_in / capacity_in
+    outgoing_normalized = vehicles_out / capacity_out
+    
+    pressure += abs(incoming_normalized - outgoing_normalized)
+
+reward = -pressure  # We want to minimize pressure!
+```
+
+### Example Calculation
+
+```
+Intersection State:
+- East: 20 in, 10 out → |20/30 - 10/30| = 0.33
+- West: 15 in, 8 out  → |15/30 - 8/30|  = 0.23
+- North: 10 in, 5 out → |10/20 - 5/20|  = 0.25
+- South: 5 in, 3 out  → |5/20 - 3/20|   = 0.10
+
+Total Pressure = 0.33 + 0.23 + 0.25 + 0.10 = 0.91
+Reward = -0.91
+```
+
+---
+
+## 🔄 Part 6: Simulation Flow
+
+### One Time Step (1 second)
+
+```
+┌─────────────────────────────────────────────┐
+│ 1. Vehicle Arrivals                         │
+│    - New vehicles spawn based on flow.json  │
+│    - Enter at road entry points             │
+└─────────────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────────────┐
+│ 2. Vehicle Movement                          │
+│    - Cars follow car-following model         │
+│    - Respect speed limits and gaps           │
+│    - Lane changing (if enabled)              │
+└─────────────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────────────┐
+│ 3. Traffic Light Control                     │
+│    - Agent selects phase (if RL)             │
+│    - Or follow fixed timing                  │
+│    - Update signal states                    │
+└─────────────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────────────┐
+│ 4. Intersection Processing                   │
+│    - Vehicles cross if green light           │
+│    - Queue at red lights                     │
+│    - Turn movements                          │
+└─────────────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────────────┐
+│ 5. State Update                              │
+│    - Update vehicle positions                │
+│    - Calculate metrics (queue, delay, etc.)  │
+│    - Prepare state for next step             │
+└─────────────────────────────────────────────┘
+```
+
+### Episode Structure
+
+```
+Episode (3600 steps = 1 hour simulation)
+
+├─ Step 0: Initialize
+│  └─ Reset all vehicles
+│  └─ Set initial phases
+│
+├─ Step 1-3600: Main Loop
+│  ├─ Get state
+│  ├─ Agent selects action
+│  ├─ Execute action (set phase)
+│  ├─ Simulate 1 second
+│  ├─ Calculate reward
+│  └─ Train agent
+│
+└─ Episode End: Evaluate
+   └─ Calculate average travel time
+   └─ Calculate throughput
+   └─ Save statistics
+```
+
+---
+
+## 🎯 Part 7: Action Space
+
+### Phase Selection
+
+```
+Action Space: {0, 1, 2, 3}
+
+Agent Output: Q-values for each action
+[Q₀, Q₁, Q₂, Q₃] = [0.8, 0.5, 0.3, 0.4]
+                     ↑ highest
+Selected Action = 0 (EW Straight)
+```
+
+### Phase Transitions
+
+```
+Phase 0 (EW) → Phase 1 (NS)
+
+Before (EW Green):
+    ⊗ ─── ⊕ ─── ⊗
+         🟢
+         
+After (NS Green):
+         🟢
+    ⊗ ─── ⊕ ─── ⊗
+         🟢
+
+CityFlow handles yellow phase automatically
+(typically 3-5 seconds transition time)
+```
+
+---
+
+## 📈 Part 8: Metrics and Evaluation
+
+### Key Performance Indicators
+
+```
+1. Average Travel Time
+   ────────────────────
+   Time from vehicle spawn to exit
+   
+   Good: < 100s
+   Fair: 100-200s
+   Poor: > 200s
+
+2. Average Queue Length
+   ────────────────────
+   Vehicles waiting at red lights
+   
+   Good: < 5 vehicles/lane
+   Fair: 5-10 vehicles/lane
+   Poor: > 10 vehicles/lane
+
+3. Throughput
+   ──────────
+   Vehicles completing journey
+   
+   Goal: Maximize completed trips
+```
+
+### Performance Comparison Chart
+
+```
+Travel Time Comparison:
+
+Fixed-Time:   ████████████████████ 200s
+Max-Pressure: ███████████████ 150s
+PressLight:   ██████████ 100s  ← TARGET
+
+0s            100s           200s
+```
+
+---
+
+## 🔧 Part 9: Common Configuration Patterns
+
+### Light Traffic (Testing)
+
+```json
+{
+  "interval": 3.0,  // 1 vehicle every 3 seconds
+  "vehicles": 1200  // per hour
+}
+```
+
+### Heavy Traffic (Training)
+
+```json
+{
+  "interval": 1.5,  // 1 vehicle every 1.5 seconds
+  "vehicles": 2400  // per hour
+}
+```
+
+### Peak Hour Pattern
+
+```json
+[
+  {
+    "interval": 3.0,
+    "startTime": 0,
+    "endTime": 1800     // First 30 min: light
+  },
+  {
+    "interval": 1.0,
+    "startTime": 1800,
+    "endTime": 2700     // Middle 15 min: heavy
+  },
+  {
+    "interval": 3.0,
+    "startTime": 2700,
+    "endTime": 3600     // Last 15 min: light
+  }
+]
+```
+
+---
+
+## 🎓 Part 10: PressLight Training Process
+
+### Training Visualization
+
+```
+Episode 0-100: Random Exploration
+──────────────────────────────────
+🎲 Agent tries random actions
+📊 Metrics: Poor (travel time high)
+🧠 Learning: Building experience
+
+Episode 100-300: Learning Patterns
+───────────────────────────────────
+🎯 Agent starts recognizing patterns
+📊 Metrics: Improving (30% better)
+🧠 Learning: Finding good strategies
+
+Episode 300-500: Fine-tuning
+─────────────────────────────
+✨ Agent exploits learned policy
+📊 Metrics: Near-optimal (45% better)
+🧠 Learning: Polishing decisions
+```
+
+### Convergence Pattern
+
+```
+Travel Time over Episodes:
+
+300s│ ●
+    │   ●
+250s│     ●
+    │       ●●
+200s│          ●●●
+    │             ●●●
+150s│                ●●●●
+    │                    ●●●●●
+100s│                         ●●●●●●●
+    └────────────────────────────────────
+    0   100   200   300   400   500
+              Episodes
+
+● = Average travel time per episode
+```
+
+---
+
+## 🚀 Part 11: Quick Start Workflow
+
+### Step-by-Step Process
+
+```
+┌─────────────────────────────────────┐
+│ Step 1: Install CityFlow            │
+│ $ pip install cityflow              │
+└─────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────┐
+│ Step 2: Generate Config Files       │
+│ $ python cityflow_complete_setup.py │
+└─────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────┐
+│ Step 3: Test Installation           │
+│ $ python test_cityflow.py           │
+└─────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────┐
+│ Step 4: Integrate PressLight        │
+│ Use CityFlowPressLightWrapper       │
+└─────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────┐
+│ Step 5: Train Agent                 │
+│ - 500 episodes                      │
+│ - Proper epsilon decay              │
+│ - Monitor metrics                   │
+└─────────────────────────────────────┘
+            ↓
+┌─────────────────────────────────────┐
+│ Step 6: Evaluate Results            │
+│ Compare: PressLight vs Baselines    │
+└─────────────────────────────────────┘
+```
+
+---
+
+## 💻 Part 12: Code Integration Example
+
+### Complete Minimal Example
+
+```python
+import cityflow
+import numpy as np
+
+# 1. Initialize CityFlow
+eng = cityflow.Engine("cityflow_data/config.json")
+
+# 2. Define state extraction
+def get_state(eng, intersection_id):
+    phase = eng.get_current_phase(intersection_id)
+    lane_vehicles = eng.get_lane_vehicles()
+    
+    # Build 18-dim state (simplified)
+    state = [1 if phase == 0 else 0, 1 if phase == 1 else 0]
+    # ... add lane vehicle counts ...
+    
+    return np.array(state)
+
+# 3. Training loop
+for episode in range(500):
+    eng.reset()
+    
+    for step in range(3600):
+        # Get state
+        state = get_state(eng, "intersection_1")
+        
+        # Agent selects action
+        action = agent.act(state)
+        
+        # Execute in CityFlow
+        eng.set_tl_phase("intersection_1", action)
+        eng.next_step()
+        
+        # Get reward and train
+        next_state = get_state(eng, "intersection_1")
+        reward = calculate_reward(next_state)
+        agent.train(state, action, reward, next_state)
+    
+    # Evaluate episode
+    metrics = eng.get_vehicle_info()
+    print(f"Episode {episode}: Avg speed = {avg_speed(metrics)}")
+```
+
+---
+
+## 📚 Additional Resources
+
+### Official Documentation
+- **CityFlow Docs**: https://cityflow.readthedocs.io/
+- **GitHub**: https://github.com/cityflow-project/CityFlow
+- **Paper**: WWW 2019 - "CityFlow: A Multi-Agent Reinforcement Learning Environment"
+
+### Example Networks
+- **Single Intersection**: 1x1 grid
+- **Arterial**: 2x1, 4x1 configurations
+- **Grid Networks**: 2x2, 3x3, 4x4
+- **Real-World**: Jinan, Manhattan datasets
+
+### Visualization Tools
+- Web-based replay viewer
+- Real-time monitoring dashboard
+- Matplotlib integration for metrics
+
+---
+
+## ✅ Checklist for Success
+
+- [ ] CityFlow installed and tested
+- [ ] Configuration files generated
+- [ ] Understanding of state representation
+- [ ] Pressure calculation implemented
+- [ ] PressLight agent integrated
+- [ ] Training with proper hyperparameters
+- [ ] Monitoring convergence
+- [ ] Achieving target performance (30-50% improvement)
+
+---
+
+**You're now ready to implement PressLight with CityFlow!** 🎉
+
+Follow the artifacts and guides provided, and you'll achieve excellent results. Remember: the key is using CityFlow for realistic simulation and proper hyperparameter tuning.

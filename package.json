@@ -1,0 +1,19 @@
+{
+  "name": "cityflow-project",
+  "version": "1.0.0",
+  "description": "A project using CityFlow for traffic simulation.",
+  "main": "cityflow_complete_setup.py",
+  "scripts": {
+    "start": "python cityflow_complete_setup.py",
+    "dev": "python cityflow_complete_setup.py",
+    "analyze": "python analyze_and_visualize.py",
+    "presslight": "python presslight_complete.py"
+  },
+  "keywords": [
+    "cityflow",
+    "traffic",
+    "simulation"
+  ],
+  "author": "",
+  "license": "ISC"
+}
